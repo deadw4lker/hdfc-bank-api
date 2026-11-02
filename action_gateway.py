@@ -15,40 +15,37 @@ import tools
 from database import get_conn
 from mock_warden import simulate_decision
 
-STATE_CHANGING = {"initiate_refund", "cancel_order", "request_return",
-                  "request_replacement", "escalate_to_human",
-                  "request_human_review"}
+STATE_CHANGING = {"initiate_transfer", "apply_loan", "verify_kyc",
+                  "block_card", "escalate_to_human"}
 
-# ShopAssist tools -> WARDEN governance vocabulary.
+# HDFC_bank tools -> WARDEN governance vocabulary.
 WARDEN_ACTION_MAP = {
-    "initiate_refund": ("issue_refund", "partially"),
-    "cancel_order": ("update_record", "reversible"),
-    "request_return": ("update_record", "partially"),
-    "request_replacement": ("issue_replacement", "partially"),
+    "initiate_transfer": ("issue_refund", "partially"),
+    "apply_loan": ("create_ticket", "reversible"),
+    "verify_kyc": ("update_record", "reversible"),
+    "block_card": ("update_record", "reversible"),
     "escalate_to_human": ("create_ticket", "reversible"),
-    "request_human_review": ("create_ticket", "reversible"),
 }
 
 
-def _shop_order_context(order_id: str | None) -> dict:
-    """Order facts WARDEN company rules reason over (total, age, history)."""
-    if not order_id:
+def _shop_account_context(account_id: str | None) -> dict:
+    """Account facts WARDEN company rules reason over (balance, age, status)."""
+    if not account_id:
         return {}
     try:
         from datetime import date
         conn = get_conn()
-        row = conn.execute("SELECT amount, order_date, refund_status FROM orders WHERE order_id = ?",
-                           (order_id,)).fetchone()
+        row = conn.execute("SELECT balance, opened_date, status FROM accounts WHERE account_id = ?",
+                           (account_id,)).fetchone()
         conn.close()
         if not row:
             return {}
         try:
-            age_days = (date.today() - date.fromisoformat(row["order_date"])).days
+            age_days = (date.today() - date.fromisoformat(row["opened_date"])).days
         except (ValueError, TypeError):
             age_days = 0
-        return {"total": float(row["amount"]), "age_days": age_days,
-                "already_refunded": row["refund_status"] == "refunded",
-                "replacements_used": 0}
+        return {"balance": float(row["balance"]), "age_days": age_days,
+                "account_status": row["status"]}
     except Exception:
         return {}
 
@@ -73,7 +70,7 @@ def _warden_config() -> dict:
     return {
         # Native WARDEN (CODEX) contract: base URL + agent passport + API key.
         "base_url": os.environ.get("WARDEN_BASE_URL", "").strip().rstrip("/"),
-        "agent_id": os.environ.get("WARDEN_AGENT_ID", "shopassist_bot").strip(),
+        "agent_id": os.environ.get("WARDEN_AGENT_ID", "hdfc_bank").strip(),
         # Legacy generic contract: full decision-endpoint URL (ALLOW/BLOCK/REQUIRE_APPROVAL).
         "endpoint": os.environ.get("WARDEN_ENDPOINT", "").strip(),
         "api_key": os.environ.get("WARDEN_API_KEY", "").strip(),
@@ -171,26 +168,27 @@ def _call_warden_native(action: str, args: dict, context: dict, request_id: str,
         amount = float(args.get("amount") or 0.0)
     except (TypeError, ValueError):
         amount = 0.0
-    if amount == 0.0 and args.get("order_id"):
-        # No explicit amount: govern the true exposure (full order value),
-        # otherwise a high-value refund would score as zero-risk.
+    if amount == 0.0 and args.get("from_account"):
+        # No explicit amount: govern the true exposure (full balance),
+        # otherwise a high-value transfer would score as zero-risk.
         try:
             conn = get_conn()
-            row = conn.execute("SELECT amount FROM orders WHERE order_id = ?",
-                               (args["order_id"],)).fetchone()
+            row = conn.execute("SELECT balance FROM accounts WHERE account_id = ?",
+                               (args["from_account"],)).fetchone()
             conn.close()
             if row:
-                amount = float(row["amount"])
+                amount = float(row["balance"])
         except Exception:
             pass
     body = _warden_http("POST", cfg["base_url"] + "/v1/actions/request", {
         "agent_id": cfg["agent_id"],
         "action": mapped,
         "params": {
-            "shopassist_action": action,
+            "hdfc_action": action,
             "customer_id": args.get("customer_id") or context.get("customer_id"),
-            "owner_id": context.get("order_owner"),
-            "order_id": args.get("order_id"),
+            "owner_id": context.get("account_owner"),
+            "from_account": args.get("from_account"),
+            "to_account": args.get("to_account"),
             "amount": args.get("amount"),
             "reason": str(args.get("reason", ""))[:300],
             "user_request": str(context.get("user_text", ""))[:500],
@@ -199,7 +197,7 @@ def _call_warden_native(action: str, args: dict, context: dict, request_id: str,
         "records_affected": 1,
         "data_class": "internal",
         "reversibility": reversibility,
-        "order": _shop_order_context(args.get("order_id")),
+        "account": _shop_account_context(args.get("from_account")),
     }, cfg, cfg["timeout"])
     decision = str(body.get("decision", "")).upper()
     decision_id = str(body.get("decision_id", ""))
@@ -225,7 +223,7 @@ def _call_warden_generic(action: str, args: dict, context: dict, request_id: str
         "action": action,
         "args": args,
         "customer_id": context.get("customer_id"),
-        "order_id": args.get("order_id"),
+        "account_id": args.get("from_account"),
         "context": {k: v for k, v in context.items() if k != "user_text"},
         "correlation_id": context.get("correlation_id", request_id),
     }).encode()
@@ -270,15 +268,15 @@ def execute(action: str, args: dict, context: dict | None = None,
         _audit(request_id, customer_id, action, args, "", "BLOCK", "failed", out["reason"], db_path)
         return out
 
-    # Enrich context with order owner for ownership gate
-    if args.get("order_id"):
+    # Enrich context with account owner for ownership gate
+    if args.get("from_account"):
         try:
             conn = get_conn(db_path)
-            row = conn.execute("SELECT customer_id FROM orders WHERE order_id = ?",
-                               (args["order_id"],)).fetchone()
+            row = conn.execute("SELECT customer_id FROM accounts WHERE account_id = ?",
+                               (args["from_account"],)).fetchone()
             conn.close()
             if row:
-                context.setdefault("order_owner", row["customer_id"])
+                context.setdefault("account_owner", row["customer_id"])
         except Exception:
             pass
 
@@ -321,21 +319,7 @@ def execute(action: str, args: dict, context: dict | None = None,
                 "result": {"ok": False, "reason": gov["reason"]},
                 "reason": gov["reason"], "request_id": request_id, "mode": mode}
     if decision == "REQUIRE_APPROVAL":
-        # Record hold; still persist pending state for refunds via backend held path?
         _audit(request_id, customer_id, action, args, "", decision, "held", gov["reason"], db_path)
-        # For refunds, mark pending_approval in DB so status is visible
-        if action == "initiate_refund" and args.get("order_id"):
-            try:
-                conn = get_conn(db_path)
-                row = conn.execute("SELECT refund_status FROM orders WHERE order_id = ?",
-                                   (args["order_id"],)).fetchone()
-                if row and row["refund_status"] == "none":
-                    conn.execute("UPDATE orders SET refund_status='pending_approval' WHERE order_id=?",
-                                 (args["order_id"],))
-                    conn.commit()
-                conn.close()
-            except Exception:
-                pass
         return {"action": action, "governance_decision": decision, "executed": False,
                 "held_for_approval": True,
                 "result": {"ok": True, "held_for_approval": True, "message": gov["reason"]},

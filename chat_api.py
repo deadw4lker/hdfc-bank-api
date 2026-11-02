@@ -1,8 +1,8 @@
-"""ShopAssist Chat API: phone-app facing HTTP layer over the agent.
+"""HDFC_bank Chat API: phone-app facing HTTP layer over the agent.
 
-Exposes the exact same brain as the Streamlit chatbot (agent.run_turn:
-abuse_guard -> LLM/rule planner -> action_gateway -> WARDEN governance)
-as a JSON API so native apps (Android/iOS/any client) can chat with it.
+Exposes the banking brain (agent.run_turn: abuse_guard -> LLM/rule planner ->
+action_gateway -> WARDEN governance) as a JSON API so native apps
+(Android/iOS/any client) can chat with it.
 
   POST /api/chat  {customer_id, message, history?} -> {reply, badges, blocked}
   GET  /health    -> {status}
@@ -41,12 +41,12 @@ class ChatMsg(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    customer_id: str = "CUST-01"
+    customer_id: str = "ACC-01"
     message: str = ""
     history: Optional[List[ChatMsg]] = None
 
 
-app = FastAPI(title="ShopAssist Chat API", version="1.0.0")
+app = FastAPI(title="HDFC_bank Chat API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -96,7 +96,7 @@ def health():
 @app.get("/")
 def root():
     return {
-        "service": "ShopAssist Chat API",
+        "service": "HDFC_bank Chat API",
         "chat": "POST /api/chat {customer_id, message, history?}",
         "health": "GET /health",
     }
