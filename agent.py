@@ -300,6 +300,14 @@ def run_turn(customer_id: str, user_text: str, history: list[dict] | None = None
     use_llm = llm_available()
     gibberish_turn = looks_like_gibberish(user_text)
     if gibberish_turn:
+        # Nonsense / gibberish statements get a strike via abuse guard
+        # instead of being answered or escalated silently.
+        strike = abuse_guard.post_check(customer_id, user_text, [], agent_id=agent_id)
+        if strike:
+            return {"reply": strike, "trace": [],
+                    "actions_attempted": 0,
+                    "blocked": 1, "blocked_user": True,
+                    "block_reason": "nonsense statement - strike applied"}
         use_llm = False
     trace, parts = [], []
     ctx = {"customer_id": customer_id, "user_text": user_text,
@@ -318,8 +326,10 @@ def run_turn(customer_id: str, user_text: str, history: list[dict] | None = None
             plan = _rule_plan(customer_id, user_text)
 
         if not plan and gibberish_turn:
-            plan = [("escalate_to_human",
-                     {"customer_id": customer_id, "reason": user_text[:200]})]
+            # Nonsense that didn't reach strike threshold: reject, don't escalate
+            parts.append("🏦 I didn't understand that. Please ask about banking operations "
+                         "(balance, transfer, loan, KYC, card, statement, complaint).")
+            break
 
         if not plan:
             if _LLM_FINAL:
