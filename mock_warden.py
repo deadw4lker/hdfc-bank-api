@@ -41,10 +41,9 @@ def simulate_decision(action: str, args: dict, context: dict) -> dict:
         except (TypeError, ValueError):
             return {"decision": "BLOCK", "reason": "Invalid amount: not a number."}
     if action in ("initiate_transfer", "block_card", "verify_kyc"):
-        if not args.get("from_account") and not args.get("account_id"):
-            # transfer needs from_account; block_card/verify_kyc need account context
-            if action != "escalate_to_human" and action != "apply_loan":
-                return {"decision": "BLOCK", "reason": "Missing account_id."}
+        # transfer needs from_account; block_card and verify_kyc only need customer_id
+        if action == "initiate_transfer" and not args.get("from_account"):
+            return {"decision": "BLOCK", "reason": "Missing from_account."}
 
     # 2. Ownership check at gateway layer (defence in depth)
     account_owner = context.get("account_owner")
