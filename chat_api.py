@@ -108,10 +108,12 @@ def chat(req: ChatRequest, authorization: Optional[str] = Header(default=None)):
     text = (req.message or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="message is required")
-    customer_id = (req.customer_id or "CUST-01").strip() or "CUST-01"
+    customer_id = (req.customer_id or "ACC-01").strip() or "ACC-01"
     hist = [{"role": m.role, "content": m.content} for m in (req.history or [])][-10:]
 
-    result = agent.run_turn(customer_id, text, hist)
+    result = agent.run_turn(customer_id, text, hist,
+                            agent_id=os.environ.get("WARDEN_AGENT_ID", "hdfc_bank"),
+                            context={"source": "chat_api", "channel": "mobile_app"})
     return {
         "reply": result.get("reply", ""),
         "badges": _badges(result.get("trace", [])),
