@@ -300,15 +300,15 @@ def run_turn(customer_id: str, user_text: str, history: list[dict] | None = None
     use_llm = llm_available()
     gibberish_turn = looks_like_gibberish(user_text)
     if gibberish_turn:
-        # Nonsense / gibberish statements get a strike via abuse guard
-        # instead of being answered or escalated silently.
-        strike = abuse_guard.post_check(customer_id, user_text, [], agent_id=agent_id)
-        if strike:
-            return {"reply": strike, "trace": [],
-                    "actions_attempted": 0,
-                    "blocked": 1, "blocked_user": True,
-                    "block_reason": "nonsense statement - strike applied"}
-        use_llm = False
+        # Nonsense / gibberish statements get a direct strike via abuse guard
+        strike = abuse_guard._apply_block(
+            abuse_guard.database.get_conn(), customer_id,
+            "nonsense / gibberish statement",
+            int(os.environ.get("ABUSE_BLOCK_MIN", "30")), user_text, agent_id=agent_id)
+        return {"reply": strike["reply"], "trace": [],
+                "actions_attempted": 0,
+                "blocked": 1, "blocked_user": True,
+                "block_reason": strike["reason"]}
     trace, parts = [], []
     ctx = {"customer_id": customer_id, "user_text": user_text,
            "correlation_id": correlation_id or "",
